@@ -166,12 +166,15 @@ client.on("interactionCreate", async interaction => {
     });
 
     // DM applicant
-    await user.send(
-      approved
-        ? "🎉 **Your family application has been APPROVED!**"
-        : "❌ **Your family application has been REJECTED.**"
-    ).catch(() => {});
-
+   try {
+  await user.send(
+    approved
+      ? "🎉 **Your family application has been APPROVED!**"
+      : "❌ **Your family application has been REJECTED.**"
+  );
+} catch (err) {
+  console.log("DM failed (user has DMs closed)");
+}
     return interaction.reply({
       content: "✅ Action completed.",
       ephemeral: true
