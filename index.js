@@ -13,8 +13,8 @@ const {
 // ========= CONFIG =========
 const TOKEN = process.env.TOKEN;
 const REQUEST_ROLE_CHANNEL_ID = "1454175656182288596";
-const LOGS_CHANNEL_ID = "1433167140201955581";
-const STAFF_ROLE_ID = "1433160218703040674"; // staff who can approve/reject
+const LOGS_CHANNEL_ID = "1456002175707906129";
+const STAFF_ROLE_ID = "1433112127287332964"; // staff who can approve/reject
 // ==========================
 
 const client = new Client({
