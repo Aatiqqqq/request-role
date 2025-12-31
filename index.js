@@ -1,8 +1,6 @@
 const {
   Client,
   GatewayIntentBits,
-  REST,
-  Routes,
   EmbedBuilder,
   ActionRowBuilder,
   ButtonBuilder,
@@ -14,38 +12,23 @@ const {
 
 // ========= CONFIG =========
 const TOKEN = process.env.TOKEN;
-const CLIENT_ID = "1455664767363715293";
 const REQUEST_ROLE_CHANNEL_ID = "1454175656182288596";
 const LOGS_CHANNEL_ID = "1433167140201955581";
+const STAFF_ROLE_ID = "1455998876942336173"; // staff who can approve/reject
 // ==========================
 
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds]
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.DirectMessages
+  ]
 });
-
-// ===== REGISTER SLASH COMMAND (ADMIN USE ONLY) =====
-const commands = [
-  {
-    name: "setup-application",
-    description: "Post application panel in request-role channel"
-  }
-];
-
-const rest = new REST({ version: "10" }).setToken(TOKEN);
-
-(async () => {
-  await rest.put(
-    Routes.applicationCommands(CLIENT_ID),
-    { body: commands }
-  );
-  console.log("✅ Slash command registered");
-})();
 
 // ===== READY =====
 client.once("clientReady", async () => {
   console.log("✅ Family Application Bot Online");
 
-  // 🔒 AUTO-POST PANEL (ENSURES IT EXISTS)
+  // Post panel automatically
   const channel = await client.channels.fetch(REQUEST_ROLE_CHANNEL_ID);
 
   const embed = new EmbedBuilder()
@@ -64,12 +47,7 @@ client.once("clientReady", async () => {
       .setStyle(ButtonStyle.Primary)
   );
 
-  await channel.send({
-    embeds: [embed],
-    components: [row]
-  });
-
-  console.log("📌 Application panel posted in request-role");
+  await channel.send({ embeds: [embed], components: [row] });
 });
 
 // ===== INTERACTIONS =====
@@ -83,34 +61,34 @@ client.on("interactionCreate", async interaction => {
       .setCustomId("family_application")
       .setTitle("Family Application");
 
-    const nameInput = new TextInputBuilder()
+    const name = new TextInputBuilder()
       .setCustomId("name")
       .setLabel("👤 Name")
       .setStyle(TextInputStyle.Short)
       .setRequired(true);
 
-    const regionInput = new TextInputBuilder()
+    const region = new TextInputBuilder()
       .setCustomId("region")
       .setLabel("🌍 Region")
       .setStyle(TextInputStyle.Short)
       .setRequired(true);
 
-    const ignInput = new TextInputBuilder()
+    const ign = new TextInputBuilder()
       .setCustomId("ign")
       .setLabel("🎮 In-Game Name")
       .setStyle(TextInputStyle.Short)
       .setRequired(true);
 
     modal.addComponents(
-      new ActionRowBuilder().addComponents(nameInput),
-      new ActionRowBuilder().addComponents(regionInput),
-      new ActionRowBuilder().addComponents(ignInput)
+      new ActionRowBuilder().addComponents(name),
+      new ActionRowBuilder().addComponents(region),
+      new ActionRowBuilder().addComponents(ign)
     );
 
     return interaction.showModal(modal);
   }
 
-  /* ───── FORM SUBMISSION ───── */
+  /* ───── SUBMIT APPLICATION ───── */
   if (interaction.isModalSubmit() &&
       interaction.customId === "family_application") {
 
@@ -118,23 +96,83 @@ client.on("interactionCreate", async interaction => {
     const region = interaction.fields.getTextInputValue("region");
     const ign = interaction.fields.getTextInputValue("ign");
 
-    const logsChannel = await client.channels.fetch(LOGS_CHANNEL_ID);
+    const logs = await client.channels.fetch(LOGS_CHANNEL_ID);
 
     const embed = new EmbedBuilder()
-      .setColor(0x00ff99)
+      .setColor(0xffff00)
       .setTitle("📥 New Family Application")
       .addFields(
         { name: "👤 Name", value: name, inline: true },
         { name: "🌍 Region", value: region, inline: true },
         { name: "🎮 In-Game Name", value: ign, inline: true },
-        { name: "👤 Discord User", value: interaction.user.tag, inline: false }
+        { name: "👤 Applicant", value: interaction.user.tag, inline: false },
+        { name: "📌 Status", value: "⏳ Pending", inline: false }
       )
+      .setFooter({ text: interaction.user.id })
       .setTimestamp();
 
-    await logsChannel.send({ embeds: [embed] });
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId("approve")
+        .setLabel("✅ Approve")
+        .setStyle(ButtonStyle.Success),
+      new ButtonBuilder()
+        .setCustomId("reject")
+        .setLabel("❌ Reject")
+        .setStyle(ButtonStyle.Danger)
+    );
+
+    await logs.send({ embeds: [embed], components: [row] });
 
     return interaction.reply({
-      content: "✅ Your application has been submitted successfully!",
+      content: "✅ Application submitted successfully!",
+      ephemeral: true
+    });
+  }
+
+  /* ───── APPROVE / REJECT ───── */
+  if (interaction.isButton() &&
+      (interaction.customId === "approve" ||
+       interaction.customId === "reject")) {
+
+    // Staff check
+    if (!interaction.member.roles.cache.has(STAFF_ROLE_ID)) {
+      return interaction.reply({
+        content: "❌ You are not authorized to do this.",
+        ephemeral: true
+      });
+    }
+
+    const embed = EmbedBuilder.from(interaction.message.embeds[0]);
+    const userId = embed.footer.text;
+    const user = await client.users.fetch(userId);
+
+    const approved = interaction.customId === "approve";
+
+    embed.setColor(approved ? 0x00ff00 : 0xff0000);
+    embed.spliceFields(4, 1, {
+      name: "📌 Status",
+      value: approved ? "✅ Approved" : "❌ Rejected"
+    });
+    embed.addFields({
+      name: "👮 Handled By",
+      value: interaction.user.tag
+    });
+
+    await interaction.message.edit({
+      embeds: [embed],
+      components: []
+    });
+
+    // DM applicant
+    await user.send(
+      approved
+        ? "🎉 **Your family application has been APPROVED!**"
+        : "❌ **Your family application has been REJECTED.**"
+    ).catch(() => {});
+
+    return interaction.reply({
+      content: "✅ Action completed.",
       ephemeral: true
     });
   }
