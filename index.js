@@ -1,10 +1,7 @@
-process.on("unhandledRejection", err => {
-  console.error("Unhandled Rejection:", err);
-});
+// ===== CRASH PROTECTION =====
+process.on("unhandledRejection", err => console.error(err));
+process.on("uncaughtException", err => console.error(err));
 
-process.on("uncaughtException", err => {
-  console.error("Uncaught Exception:", err);
-});
 const {
   Client,
   GatewayIntentBits,
@@ -17,12 +14,12 @@ const {
   TextInputStyle
 } = require("discord.js");
 
-// ========= CONFIG =========
+// ===== CONFIG =====
 const TOKEN = process.env.TOKEN;
 const REQUEST_ROLE_CHANNEL_ID = "1454175656182288596";
-const LOGS_CHANNEL_ID = "1456002175707906129";
-const STAFF_ROLE_ID = "1433112127287332964"; // staff who can approve/reject
-// ==========================
+const LOGS_CHANNEL_ID = "1454175656182288596";
+const STAFF_ROLE_ID = "1433112127287332964";
+// ==================
 
 const client = new Client({
   intents: [
@@ -37,17 +34,16 @@ const client = new Client({
 client.once("clientReady", async () => {
   console.log("✅ Family Application Bot Online");
 
-  // Post panel automatically
+  // Auto post panel
   const channel = await client.channels.fetch(REQUEST_ROLE_CHANNEL_ID);
 
   const embed = new EmbedBuilder()
     .setColor(0xff0000)
     .setTitle("👑 Welcome to Family")
     .setDescription(
-      "Please fill your data **correctly** by pressing the button below.\n\n" +
+      "Fill your data **correctly** by pressing the button below.\n\n" +
       "📋 **Family Role Application**"
-    )
-    .setFooter({ text: "Family Application System" });
+    );
 
   const row = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
@@ -62,9 +58,8 @@ client.once("clientReady", async () => {
 // ===== INTERACTIONS =====
 client.on("interactionCreate", async interaction => {
 
-  /* ───── OPEN MODAL ───── */
-  if (interaction.isButton() &&
-      interaction.customId === "open_application") {
+  // ───── OPEN MODAL ─────
+  if (interaction.isButton() && interaction.customId === "open_application") {
 
     const modal = new ModalBuilder()
       .setCustomId("family_application")
@@ -97,7 +92,7 @@ client.on("interactionCreate", async interaction => {
     return interaction.showModal(modal);
   }
 
-  /* ───── SUBMIT APPLICATION ───── */
+  // ───── SUBMIT APPLICATION ─────
   if (interaction.isModalSubmit() &&
       interaction.customId === "family_application") {
 
@@ -114,7 +109,6 @@ client.on("interactionCreate", async interaction => {
         { name: "👤 Name", value: name, inline: true },
         { name: "🌍 Region", value: region, inline: true },
         { name: "🎮 In-Game Name", value: ign, inline: true },
-        { name: "👤 Applicant", value: interaction.user.tag, inline: false },
         { name: "📌 Status", value: "⏳ Pending", inline: false }
       )
       .setFooter({ text: interaction.user.id })
@@ -139,56 +133,51 @@ client.on("interactionCreate", async interaction => {
     });
   }
 
-  /* ───── APPROVE / REJECT ───── */
- 
-iif (
-  interaction.isButton() &&
-  (interaction.customId === "approve" ||
-   interaction.customId === "reject")
-) {
-  // ✅ ACKNOWLEDGE INSTANTLY
-  await interaction.deferUpdate();
+  // ───── APPROVE / REJECT ─────
+  if (
+    interaction.isButton() &&
+    (interaction.customId === "approve" ||
+     interaction.customId === "reject")
+  ) {
+    await interaction.deferUpdate();
 
-  try {
-    // ✅ SAFE ROLE CHECK
-    const member = await interaction.guild.members.fetch(interaction.user.id);
-    if (!member.roles.cache.has(STAFF_ROLE_ID)) return;
-
-    const embed = EmbedBuilder.from(interaction.message.embeds[0]);
-    const userId = embed.footer?.text;
-
-    if (!userId) return;
-
-    const user = await client.users.fetch(userId);
-    const approved = interaction.customId === "approve";
-
-    embed.setColor(approved ? 0x00ff00 : 0xff0000);
-    embed.spliceFields(4, 1, {
-      name: "📌 Status",
-      value: approved ? "✅ Approved" : "❌ Rejected"
-    });
-    embed.addFields({
-      name: "👮 Handled By",
-      value: interaction.user.tag
-    });
-
-    await interaction.message.edit({
-      embeds: [embed],
-      components: []
-    });
-
-    // ✅ SAFE DM (NEVER CRASHES)
     try {
-      await user.send(
-        approved
-          ? "🎉 **Your family application has been APPROVED!**"
-          : "❌ **Your family application has been REJECTED.**"
-      );
-    } catch {}
+      const member = await interaction.guild.members.fetch(interaction.user.id);
+      if (!member.roles.cache.has(STAFF_ROLE_ID)) return;
 
-  } catch (err) {
-    console.error("Approve/Reject handler error:", err);
+      const embed = EmbedBuilder.from(interaction.message.embeds[0]);
+      const userId = embed.footer.text;
+      const user = await client.users.fetch(userId);
+
+      const approved = interaction.customId === "approve";
+
+      embed.setColor(approved ? 0x00ff00 : 0xff0000);
+      embed.spliceFields(3, 1, {
+        name: "📌 Status",
+        value: approved ? "✅ Approved" : "❌ Rejected"
+      });
+      embed.addFields({
+        name: "👮 Handled By",
+        value: interaction.user.tag
+      });
+
+      await interaction.message.edit({
+        embeds: [embed],
+        components: []
+      });
+
+      try {
+        await user.send(
+          approved
+            ? "🎉 **Your family application has been APPROVED!**"
+            : "❌ **Your family application has been REJECTED.**"
+        );
+      } catch {}
+
+    } catch (err) {
+      console.error("Approve/Reject error:", err);
+    }
   }
-}
+});
 
 client.login(TOKEN);
