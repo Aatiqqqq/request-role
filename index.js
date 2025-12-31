@@ -1,3 +1,10 @@
+process.on("unhandledRejection", err => {
+  console.error("Unhandled Rejection:", err);
+});
+
+process.on("uncaughtException", err => {
+  console.error("Uncaught Exception:", err);
+});
 const {
   Client,
   GatewayIntentBits,
@@ -22,7 +29,8 @@ const client = new Client({
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMembers,
     GatewayIntentBits.DirectMessages
-  ]
+  ],
+  partials: ["CHANNEL"]
 });
 
 // ===== READY =====
@@ -132,22 +140,26 @@ client.on("interactionCreate", async interaction => {
   }
 
   /* ───── APPROVE / REJECT ───── */
-  if (interaction.isButton() &&
-      (interaction.customId === "approve" ||
-       interaction.customId === "reject")) {
+ 
+iif (
+  interaction.isButton() &&
+  (interaction.customId === "approve" ||
+   interaction.customId === "reject")
+) {
+  // ✅ ACKNOWLEDGE INSTANTLY
+  await interaction.deferUpdate();
 
-    // Staff check
-    if (!interaction.member.roles.cache.has(STAFF_ROLE_ID)) {
-      return interaction.reply({
-        content: "❌ You are not authorized to do this.",
-        ephemeral: true
-      });
-    }
+  try {
+    // ✅ SAFE ROLE CHECK
+    const member = await interaction.guild.members.fetch(interaction.user.id);
+    if (!member.roles.cache.has(STAFF_ROLE_ID)) return;
 
     const embed = EmbedBuilder.from(interaction.message.embeds[0]);
-    const userId = embed.footer.text;
-    const user = await client.users.fetch(userId);
+    const userId = embed.footer?.text;
 
+    if (!userId) return;
+
+    const user = await client.users.fetch(userId);
     const approved = interaction.customId === "approve";
 
     embed.setColor(approved ? 0x00ff00 : 0xff0000);
@@ -165,21 +177,18 @@ client.on("interactionCreate", async interaction => {
       components: []
     });
 
-    // DM applicant
-   try {
-  await user.send(
-    approved
-      ? "🎉 **Your family application has been APPROVED!**"
-      : "❌ **Your family application has been REJECTED.**"
-  );
-} catch (err) {
-  console.log("DM failed (user has DMs closed)");
-}
-    return interaction.reply({
-      content: "✅ Action completed.",
-      ephemeral: true
-    });
+    // ✅ SAFE DM (NEVER CRASHES)
+    try {
+      await user.send(
+        approved
+          ? "🎉 **Your family application has been APPROVED!**"
+          : "❌ **Your family application has been REJECTED.**"
+      );
+    } catch {}
+
+  } catch (err) {
+    console.error("Approve/Reject handler error:", err);
   }
-});
+}
 
 client.login(TOKEN);
