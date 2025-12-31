@@ -20,6 +20,7 @@ const STAFF_ROLE_ID = "1433160218703040674"; // staff who can approve/reject
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMembers,
     GatewayIntentBits.DirectMessages
   ]
 });
