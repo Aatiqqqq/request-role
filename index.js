@@ -1,69 +1,53 @@
-// ============================================================
-// FAMILY APPLICATION BOT
-// Discord.js v14
-// ============================================================
-
-const express = require("express");
-
-process.on("unhandledRejection", err => console.error("Unhandled Rejection:", err));
-process.on("uncaughtException", err => console.error("Uncaught Exception:", err));
-
-const {
+\const {
   Client,
   GatewayIntentBits,
-  EmbedBuilder,
+  Partials,
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
   ModalBuilder,
   TextInputBuilder,
-  TextInputStyle
+  TextInputStyle,
+  EmbedBuilder,
+  PermissionsBitField,
+  StringSelectMenuBuilder,
+  StringSelectMenuOptionBuilder,
+  Events,
 } = require("discord.js");
+const express = require("express");
+const crypto = require("crypto");
 
-// ============================================================
+// =========================
 // CONFIG
-// ============================================================
-
+// =========================
 const TOKEN = process.env.TOKEN;
 
+const VERIFICATION_CHANNEL_ID = "1433117197177323601";
 const REQUEST_ROLE_CHANNEL_ID = "1454175656182288596";
+const MEMBER_ROLE_ID = "1433112536642879608";
+
+// Existing Family Application settings
 const LOGS_CHANNEL_ID = "1456002175707906129";
 const STAFF_ROLE_ID = "1433112127287332964";
 
 const GAME_ROLES = {
   valorant: "1436304907551375390",
   grandrp: "1433136876574736484",
-  fortnite: "1433333680436416552"
+  fortnite: "1433333680436416552",
 };
 
-const GAME_INFO = {
-  valorant: {
-    label: "VALORANT",
-    emoji: "🔫",
-    roleId: GAME_ROLES.valorant
-  },
-  grandrp: {
-    label: "Grand RP",
-    emoji: "🫀",
-    roleId: GAME_ROLES.grandrp
-  },
-  fortnite: {
-    label: "Fortnite",
-    emoji: "🪓",
-    roleId: GAME_ROLES.fortnite
-  }
-};
+if (!TOKEN) {
+  console.error("❌ TOKEN environment variable is missing.");
+  process.exit(1);
+}
 
-const APPLICATION_COOLDOWN = 10 * 60 * 1000;
-
-// ============================================================
-// RENDER WEB SERVER
-// ============================================================
-
+// =========================
+// WEB SERVER FOR RENDER
+// =========================
 const app = express();
 
 app.get("/", (req, res) => {
-  res.status(200).send("Family Application Bot is online.");
+  res.status(200).send("Family Manager is online.");
 });
 
 app.get("/health", (req, res) => {
@@ -71,790 +55,634 @@ app.get("/health", (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`🌐 Web server listening on port ${PORT}`);
 });
 
-// ============================================================
-// CLIENT
-// ============================================================
-
+// =========================
+// DISCORD CLIENT
+// =========================
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMembers
-  ]
+    GatewayIntentBits.GuildMembers,
+  ],
+  partials: [Partials.Channel],
 });
 
-// ============================================================
-// TEMPORARY APPLICATION DATA
-// ============================================================
+// In-memory verification challenges.
+// They expire quickly and do not need a database.
+const verificationChallenges = new Map();
 
-const pendingSelections = new Map();
-const cooldowns = new Map();
-let applicationCounter = 0;
+// In-memory application data for the current process.
+const applications = new Map();
 
-// ============================================================
-// HELPERS
-// ============================================================
-
-function createApplicationId() {
-  applicationCounter++;
-  const time = Date.now().toString(36).toUpperCase();
-  return `FAM-${time}-${String(applicationCounter).padStart(3, "0")}`;
+function makeCaptcha() {
+  const a = crypto.randomInt(2, 10);
+  const b = crypto.randomInt(2, 10);
+  const operations = [
+    { symbol: "+", answer: a + b },
+    { symbol: "-", answer: a - b },
+    { symbol: "×", answer: a * b },
+  ];
+  const op = operations[crypto.randomInt(0, operations.length)];
+  return {
+    a,
+    b,
+    symbol: op.symbol,
+    answer: op.answer,
+    question: `${a} ${op.symbol} ${b}`,
+  };
 }
 
-function getGameButtons(userId, selectedGames = []) {
-  const row = new ActionRowBuilder();
+function verificationPanel() {
+  const embed = new EmbedBuilder()
+    .setTitle("🔐 Server Verification")
+    .setDescription(
+      "Welcome to the server!\n\n" +
+      "Click **Verify ✅** below to complete a quick CAPTCHA.\n" +
+      "After successful verification, you will receive the **Member** role and instructions for the application."
+    )
+    .setFooter({ text: "Family Manager • Verification" });
 
-  for (const [key, game] of Object.entries(GAME_INFO)) {
-    const selected = selectedGames.includes(key);
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId("verify_start")
+      .setLabel("Verify ✅")
+      .setStyle(ButtonStyle.Success)
+  );
 
-    row.addComponents(
-      new ButtonBuilder()
-        .setCustomId(`game:${key}:${userId}`)
-        .setLabel(`${selected ? "✅ " : ""}${game.label}`)
-        .setEmoji(game.emoji)
-        .setStyle(selected ? ButtonStyle.Success : ButtonStyle.Secondary)
-    );
+  return { embeds: [embed], components: [row] };
+}
+
+function requestRoleLink(guild) {
+  const channel = guild.channels.cache.get(REQUEST_ROLE_CHANNEL_ID);
+  return channel
+    ? `<#${REQUEST_ROLE_CHANNEL_ID}>`
+    : "the Request Role channel";
+}
+
+async function sendVerificationSuccess(interaction) {
+  const guild = interaction.guild;
+  const member = await guild.members.fetch(interaction.user.id);
+  const role = guild.roles.cache.get(MEMBER_ROLE_ID);
+
+  if (!role) {
+    return interaction.reply({
+      content: "❌ Member role was not found. Please contact an administrator.",
+      ephemeral: true,
+    });
   }
 
-  return row;
+  if (role.position >= guild.members.me.roles.highest.position) {
+    return interaction.reply({
+      content:
+        "❌ I cannot assign the Member role. Please move the Member role **below my bot role** in Server Settings → Roles.",
+      ephemeral: true,
+    });
+  }
+
+  if (!member.roles.cache.has(MEMBER_ROLE_ID)) {
+    await member.roles.add(role, "Successful CAPTCHA verification");
+  }
+
+  const channelMention = requestRoleLink(guild);
+
+  const successEmbed = new EmbedBuilder()
+    .setTitle("✅ Successfully Verified!")
+    .setDescription(
+      `Welcome to **${guild.name}**!\n\n` +
+      `You have successfully completed verification and received the **Member** role.\n\n` +
+      `📝 Please fill out the **Family Application Form** in ${channelMention} now.`
+    )
+    .setFooter({ text: "Family Manager • Verification" });
+
+  await interaction.reply({
+    embeds: [successEmbed],
+    ephemeral: true,
+  });
+
+  try {
+    await interaction.user.send({
+      embeds: [
+        new EmbedBuilder()
+          .setTitle("🎉 You are successfully verified!")
+          .setDescription(
+            `Welcome to **${guild.name}**!\n\n` +
+            `Your verification was successful and you have received the **Member** role.\n\n` +
+            `📝 **Next step:** Please fill out the Family Application Form in ${channelMention}.\n\n` +
+            `Click the channel mention above to open it directly.`
+          )
+          .setFooter({ text: "Family Manager" }),
+      ],
+    });
+  } catch (error) {
+    console.log(`⚠️ Could not DM ${interaction.user.tag}. Their DMs may be closed.`);
+  }
 }
 
-function getConfirmButton(userId) {
+function applicationModal() {
+  const modal = new ModalBuilder()
+    .setCustomId("application_modal")
+    .setTitle("Family Application");
+
+  const name = new TextInputBuilder()
+    .setCustomId("name")
+    .setLabel("Name")
+    .setPlaceholder("Enter your name")
+    .setStyle(TextInputStyle.Short)
+    .setRequired(true)
+    .setMaxLength(100);
+
+  const region = new TextInputBuilder()
+    .setCustomId("region")
+    .setLabel("Region")
+    .setPlaceholder("Example: India / EU / NA")
+    .setStyle(TextInputStyle.Short)
+    .setRequired(true)
+    .setMaxLength(100);
+
+  const ign = new TextInputBuilder()
+    .setCustomId("ign")
+    .setLabel("In-Game Name")
+    .setPlaceholder("Enter your in-game name")
+    .setStyle(TextInputStyle.Short)
+    .setRequired(true)
+    .setMaxLength(100);
+
+  const experience = new TextInputBuilder()
+    .setCustomId("experience")
+    .setLabel("Gaming Experience")
+    .setPlaceholder("Example: 3 years / 2 years VALORANT")
+    .setStyle(TextInputStyle.Paragraph)
+    .setRequired(true)
+    .setMaxLength(500);
+
+  modal.addComponents(
+    new ActionRowBuilder().addComponents(name),
+    new ActionRowBuilder().addComponents(region),
+    new ActionRowBuilder().addComponents(ign),
+    new ActionRowBuilder().addComponents(experience)
+  );
+
+  return modal;
+}
+
+function gameSelectionMessage() {
+  const embed = new EmbedBuilder()
+    .setTitle("🎮 Select Your Game")
+    .setDescription("Choose the game you mainly want the role for.");
+
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId("game_valorant")
+      .setLabel("VALORANT")
+      .setStyle(ButtonStyle.Primary),
+    new ButtonBuilder()
+      .setCustomId("game_grandrp")
+      .setLabel("Grand RP")
+      .setStyle(ButtonStyle.Primary),
+    new ButtonBuilder()
+      .setCustomId("game_fortnite")
+      .setLabel("Fortnite")
+      .setStyle(ButtonStyle.Primary)
+  );
+
+  return { embeds: [embed], components: [row], ephemeral: true };
+}
+
+function applicationButtons(userId, applicationId) {
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder()
-      .setCustomId(`confirm_games:${userId}`)
-      .setLabel("Confirm Game Selection")
-      .setEmoji("✅")
-      .setStyle(ButtonStyle.Primary)
+      .setCustomId(`approve:${userId}:${applicationId}`)
+      .setLabel("Approve")
+      .setStyle(ButtonStyle.Success),
+    new ButtonBuilder()
+      .setCustomId(`reject:${userId}:${applicationId}`)
+      .setLabel("Reject")
+      .setStyle(ButtonStyle.Danger)
   );
 }
 
-function getSelectedGameText(selectedGames) {
-  if (!selectedGames.length) return "None selected";
-
-  return selectedGames
-    .map(game => `${GAME_INFO[game].emoji} **${GAME_INFO[game].label}**`)
-    .join("\n");
+function rejectModal(userId, applicationId) {
+  return new ModalBuilder()
+    .setCustomId(`reject_reason:${userId}:${applicationId}`)
+    .setTitle("Reject Application")
+    .addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId("reason")
+          .setLabel("Reason for rejection")
+          .setPlaceholder("Enter the reason the application was rejected")
+          .setStyle(TextInputStyle.Paragraph)
+          .setRequired(true)
+          .setMaxLength(1000)
+      )
+    );
 }
 
-function isStaff(member) {
-  return member?.roles?.cache?.has(STAFF_ROLE_ID);
+async function isStaff(interaction) {
+  const member = await interaction.guild.members.fetch(interaction.user.id);
+  return (
+    member.permissions.has(PermissionsBitField.Flags.Administrator) ||
+    member.roles.cache.has(STAFF_ROLE_ID)
+  );
 }
 
-// ============================================================
-// READY
-// ============================================================
-
-client.once("clientReady", async () => {
-  console.log("=================================");
-  console.log("✅ Family Application Bot Online");
-  console.log(`🤖 Logged in as ${client.user.tag}`);
-  console.log("=================================");
+client.once(Events.ClientReady, async (readyClient) => {
+  console.log(`✅ Logged in as ${readyClient.user.tag}`);
 
   try {
-    const channel = await client.channels.fetch(REQUEST_ROLE_CHANNEL_ID);
+    await readyClient.application.commands.set([
+      {
+        name: "setup-verification",
+        description: "Post the CAPTCHA verification panel in the verification channel.",
+      },
+      {
+        name: "open_application",
+        description: "Open the Family Application Form.",
+      },
+      {
+        name: "my_application",
+        description: "Check your current application status.",
+      },
+    ]);
+    console.log("✅ Slash commands registered.");
+  } catch (error) {
+    console.error("❌ Could not register slash commands:", error);
+  }
+});
 
-    if (!channel) {
-      console.error("❌ Application channel not found.");
+client.on(Events.InteractionCreate, async (interaction) => {
+  try {
+    // =========================
+    // SLASH COMMANDS
+    // =========================
+    if (interaction.isChatInputCommand()) {
+      if (interaction.commandName === "setup-verification") {
+        if (!interaction.memberPermissions?.has(PermissionsBitField.Flags.Administrator)) {
+          return interaction.reply({
+            content: "❌ Only server administrators can use this command.",
+            ephemeral: true,
+          });
+        }
+
+        const channel = interaction.guild.channels.cache.get(
+          VERIFICATION_CHANNEL_ID
+        );
+
+        if (!channel || !channel.isTextBased()) {
+          return interaction.reply({
+            content: "❌ Verification channel was not found.",
+            ephemeral: true,
+          });
+        }
+
+        await channel.send(verificationPanel());
+
+        return interaction.reply({
+          content: `✅ Verification panel posted in <#${VERIFICATION_CHANNEL_ID}>.`,
+          ephemeral: true,
+        });
+      }
+
+      if (interaction.commandName === "open_application") {
+        return interaction.showModal(applicationModal());
+      }
+
+      if (interaction.commandName === "my_application") {
+        const appData = applications.get(interaction.user.id);
+
+        if (!appData) {
+          return interaction.reply({
+            content: `❌ You do not have an application yet. Please use the form in <#${REQUEST_ROLE_CHANNEL_ID}>.`,
+            ephemeral: true,
+          });
+        }
+
+        return interaction.reply({
+          content:
+            `📋 **Application Status:** ${appData.status}\n` +
+            (appData.reason ? `\n**Reason:** ${appData.reason}` : ""),
+          ephemeral: true,
+        });
+      }
+    }
+
+    // =========================
+    // VERIFY BUTTON
+    // =========================
+    if (interaction.isButton() && interaction.customId === "verify_start") {
+      const member = await interaction.guild.members.fetch(interaction.user.id);
+
+      if (member.roles.cache.has(MEMBER_ROLE_ID)) {
+        return interaction.reply({
+          content:
+            `✅ You are already verified. Please fill out the application in <#${REQUEST_ROLE_CHANNEL_ID}>.`,
+          ephemeral: true,
+        });
+      }
+
+      const challenge = makeCaptcha();
+      verificationChallenges.set(interaction.user.id, {
+        answer: challenge.answer,
+        question: `${challenge.a} ${challenge.symbol} ${challenge.b}`,
+        expiresAt: Date.now() + 5 * 60 * 1000,
+      });
+
+      const captchaModal = new ModalBuilder()
+        .setCustomId("captcha_modal")
+        .setTitle("CAPTCHA Verification")
+        .addComponents(
+          new ActionRowBuilder().addComponents(
+            new TextInputBuilder()
+              .setCustomId("answer")
+              .setLabel(`Solve: ${challenge.question}`)
+              .setPlaceholder("Enter the answer")
+              .setStyle(TextInputStyle.Short)
+              .setRequired(true)
+              .setMaxLength(10)
+          )
+        );
+
+      return interaction.showModal(captchaModal);
+    }
+
+    // =========================
+    // CAPTCHA MODAL
+    // =========================
+    if (interaction.isModalSubmit() && interaction.customId === "captcha_modal") {
+      const challenge = verificationChallenges.get(interaction.user.id);
+
+      if (!challenge || challenge.expiresAt < Date.now()) {
+        verificationChallenges.delete(interaction.user.id);
+        return interaction.reply({
+          content: "❌ CAPTCHA expired. Please click Verify again.",
+          ephemeral: true,
+        });
+      }
+
+      const answer = Number.parseInt(
+        interaction.fields.getTextInputValue("answer").trim(),
+        10
+      );
+
+      if (!Number.isInteger(answer) || answer !== challenge.answer) {
+        verificationChallenges.delete(interaction.user.id);
+        return interaction.reply({
+          content: "❌ Incorrect CAPTCHA. Please click Verify and try again.",
+          ephemeral: true,
+        });
+      }
+
+      verificationChallenges.delete(interaction.user.id);
+      return sendVerificationSuccess(interaction);
+    }
+
+    // =========================
+    // APPLICATION MODAL
+    // =========================
+    if (
+      interaction.isModalSubmit() &&
+      interaction.customId === "application_modal"
+    ) {
+      const data = {
+        userId: interaction.user.id,
+        username: interaction.user.tag,
+        name: interaction.fields.getTextInputValue("name"),
+        region: interaction.fields.getTextInputValue("region"),
+        ign: interaction.fields.getTextInputValue("ign"),
+        experience: interaction.fields.getTextInputValue("experience"),
+        status: "Pending",
+        createdAt: new Date(),
+      };
+
+      applications.set(interaction.user.id, data);
+
+      await interaction.reply({
+        ...gameSelectionMessage(),
+      });
       return;
     }
 
-    const messages = await channel.messages.fetch({ limit: 50 });
-
-    const existingPanel = messages.find(message =>
-      message.author.id === client.user.id &&
-      message.components.some(row =>
-        row.components.some(component =>
-          component.customId === "open_application"
-        )
-      )
-    );
-
-    const embed = new EmbedBuilder()
-      .setColor(0x5865F2)
-      .setTitle("👑 Welcome to Family")
-      .setDescription(
-        "Welcome! If you want to join our family, submit your application using the button below.\n\n" +
-        "📋 **Application Requirements**\n" +
-        "• Enter your real information correctly\n" +
-        "• Provide your correct in-game name\n" +
-        "• Tell us your gaming experience\n" +
-        "• Select all games you currently play\n\n" +
-        "🎮 **Available Games**\n" +
-        "🔫 VALORANT\n" +
-        "🫀 Grand RP\n" +
-        "🪓 Fortnite\n\n" +
-        "⚠️ Please make sure all information is correct before submitting."
-      )
-      .setFooter({ text: "Family Application System" })
-      .setTimestamp();
-
-    const row = new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId("open_application")
-        .setLabel("Fill Application")
-        .setEmoji("✍️")
-        .setStyle(ButtonStyle.Primary)
-    );
-
-    if (existingPanel) {
-      await existingPanel.edit({ embeds: [embed], components: [row] });
-      console.log("📌 Existing application panel updated.");
-    } else {
-      await channel.send({ embeds: [embed], components: [row] });
-      console.log("📌 New application panel created.");
-    }
-  } catch (err) {
-    console.error("❌ Error setting application panel:", err);
-  }
-});
-
-// ============================================================
-// INTERACTIONS
-// ============================================================
-
-client.on("interactionCreate", async interaction => {
-  // ==========================================================
-  // OPEN APPLICATION
-  // ==========================================================
-
-  if (interaction.isButton() && interaction.customId === "open_application") {
-    const existingCooldown = cooldowns.get(interaction.user.id);
-
+    // =========================
+    // GAME SELECTION
+    // =========================
     if (
-      existingCooldown &&
-      Date.now() - existingCooldown < APPLICATION_COOLDOWN
+      interaction.isButton() &&
+      ["valorant", "grandrp", "fortnite"].some(
+        (game) => interaction.customId === `game_${game}`
+      )
     ) {
-      const remaining = Math.ceil(
-        (APPLICATION_COOLDOWN - (Date.now() - existingCooldown)) / 60000
-      );
+      const game = interaction.customId.replace("game_", "");
+      const appData = applications.get(interaction.user.id);
 
-      return interaction.reply({
-        content:
-          `⏳ You recently submitted an application.\n` +
-          `Please wait approximately **${remaining} minute(s)** before submitting another.`,
-        ephemeral: true
-      });
-    }
-
-    const modal = new ModalBuilder()
-      .setCustomId("family_application")
-      .setTitle("Family Application");
-
-    const name = new TextInputBuilder()
-      .setCustomId("name")
-      .setLabel("👤 Name")
-      .setPlaceholder("Enter your name")
-      .setStyle(TextInputStyle.Short)
-      .setRequired(true)
-      .setMaxLength(50);
-
-    const region = new TextInputBuilder()
-      .setCustomId("region")
-      .setLabel("🌍 Region")
-      .setPlaceholder("Example: India / Kashmir")
-      .setStyle(TextInputStyle.Short)
-      .setRequired(true)
-      .setMaxLength(50);
-
-    const ign = new TextInputBuilder()
-      .setCustomId("ign")
-      .setLabel("🎮 In-Game Name")
-      .setPlaceholder("Enter your exact in-game name")
-      .setStyle(TextInputStyle.Short)
-      .setRequired(true)
-      .setMaxLength(100);
-
-    const experience = new TextInputBuilder()
-      .setCustomId("experience")
-      .setLabel("⭐ Gaming Experience")
-      .setPlaceholder("Example: 3 years / 2 years VALORANT")
-      .setStyle(TextInputStyle.Paragraph)
-      .setRequired(true)
-      .setMaxLength(500);
-
-    modal.addComponents(
-      new ActionRowBuilder().addComponents(name),
-      new ActionRowBuilder().addComponents(region),
-      new ActionRowBuilder().addComponents(ign),
-      new ActionRowBuilder().addComponents(experience)
-    );
-
-    return interaction.showModal(modal);
-  }
-
-  // ==========================================================
-  // APPLICATION SUBMITTED
-  // ==========================================================
-
-  if (
-    interaction.isModalSubmit() &&
-    interaction.customId === "family_application"
-  ) {
-    const name = interaction.fields.getTextInputValue("name");
-    const region = interaction.fields.getTextInputValue("region");
-    const ign = interaction.fields.getTextInputValue("ign");
-    const experience = interaction.fields.getTextInputValue("experience");
-
-    const applicationId = createApplicationId();
-
-    pendingSelections.set(interaction.user.id, {
-      applicationId,
-      name,
-      region,
-      ign,
-      experience,
-      selectedGames: [],
-      createdAt: Date.now()
-    });
-
-    return interaction.reply({
-      content:
-        "## 🎮 Choose Your Games\n\n" +
-        "Select **one or multiple games** that you play.\n\n" +
-        "You can select all three if you want.\n\n" +
-        "After selecting your games, press **Confirm Game Selection**.",
-
-      embeds: [
-        new EmbedBuilder()
-          .setColor(0x5865F2)
-          .setTitle("🎮 Game Selection")
-          .setDescription(
-            `**Application ID:** \`${applicationId}\`\n\n` +
-            "Choose your game roles below.\n\n" +
-            "🔫 VALORANT\n" +
-            "🫀 Grand RP\n" +
-            "🪓 Fortnite"
-          )
-          .setFooter({ text: "You can select multiple games." })
-      ],
-
-      components: [
-        getGameButtons(interaction.user.id),
-        getConfirmButton(interaction.user.id)
-      ],
-
-      ephemeral: true
-    });
-  }
-
-  // ==========================================================
-  // GAME ROLE SELECTION
-  // ==========================================================
-
-  if (interaction.isButton() && interaction.customId.startsWith("game:")) {
-    const [, gameKey, userId] = interaction.customId.split(":");
-
-    if (interaction.user.id !== userId) {
-      return interaction.reply({
-        content: "❌ These game selection buttons belong to another user.",
-        ephemeral: true
-      });
-    }
-
-    const application = pendingSelections.get(interaction.user.id);
-
-    if (!application) {
-      return interaction.reply({
-        content:
-          "❌ Your application session has expired. Please start a new application.",
-        ephemeral: true
-      });
-    }
-
-    if (!GAME_INFO[gameKey]) {
-      return interaction.reply({
-        content: "❌ Invalid game selection.",
-        ephemeral: true
-      });
-    }
-
-    const selected = application.selectedGames;
-
-    if (selected.includes(gameKey)) {
-      application.selectedGames = selected.filter(game => game !== gameKey);
-    } else {
-      application.selectedGames.push(gameKey);
-    }
-
-    pendingSelections.set(interaction.user.id, application);
-
-    return interaction.update({
-      embeds: [
-        new EmbedBuilder()
-          .setColor(0x5865F2)
-          .setTitle("🎮 Game Selection")
-          .setDescription(
-            `**Application ID:** \`${application.applicationId}\`\n\n` +
-            "**Your selected games:**\n" +
-            getSelectedGameText(application.selectedGames) +
-            "\n\nSelect more games or press **Confirm Game Selection**."
-          )
-      ],
-      components: [
-        getGameButtons(interaction.user.id, application.selectedGames),
-        getConfirmButton(interaction.user.id)
-      ]
-    });
-  }
-
-  // ==========================================================
-  // CONFIRM GAME SELECTION
-  // ==========================================================
-
-  if (
-    interaction.isButton() &&
-    interaction.customId.startsWith("confirm_games:")
-  ) {
-    const [, userId] = interaction.customId.split(":");
-
-    if (interaction.user.id !== userId) {
-      return interaction.reply({
-        content: "❌ This selection belongs to another user.",
-        ephemeral: true
-      });
-    }
-
-    const application = pendingSelections.get(interaction.user.id);
-
-    if (!application) {
-      return interaction.reply({
-        content:
-          "❌ Your application session has expired. Please start a new application.",
-        ephemeral: true
-      });
-    }
-
-    if (!application.selectedGames.length) {
-      return interaction.reply({
-        content:
-          "⚠️ Please select at least **one game** before confirming.",
-        ephemeral: true
-      });
-    }
-
-    await interaction.deferUpdate();
-
-    try {
-      const member = await interaction.guild.members.fetch(interaction.user.id);
-
-      const allGameRoleIds = Object.values(GAME_ROLES);
-
-      for (const roleId of allGameRoleIds) {
-        if (
-          member.roles.cache.has(roleId) &&
-          !application.selectedGames.some(
-            game => GAME_INFO[game].roleId === roleId
-          )
-        ) {
-          try {
-            await member.roles.remove(roleId);
-          } catch (err) {
-            console.error(`Could not remove role ${roleId}:`, err);
-          }
-        }
+      if (!appData) {
+        return interaction.reply({
+          content: "❌ Application data was not found. Please submit again.",
+          ephemeral: true,
+        });
       }
 
-      for (const game of application.selectedGames) {
-        const roleId = GAME_INFO[game].roleId;
+      appData.game = game;
+      applications.set(interaction.user.id, appData);
 
-        if (!member.roles.cache.has(roleId)) {
-          try {
-            await member.roles.add(roleId);
-          } catch (err) {
-            console.error(`Could not add role ${roleId}:`, err);
-          }
-        }
+      const logsChannel = interaction.guild.channels.cache.get(LOGS_CHANNEL_ID);
+
+      if (!logsChannel || !logsChannel.isTextBased()) {
+        return interaction.update({
+          content: "❌ Logs channel was not found. Please contact staff.",
+          embeds: [],
+          components: [],
+        });
       }
 
-      const logs = await client.channels.fetch(LOGS_CHANNEL_ID);
-
-      if (!logs) {
-        throw new Error("Logs channel not found.");
-      }
-
-      const selectedGamesText = application.selectedGames
-        .map(game => {
-          const info = GAME_INFO[game];
-          return `${info.emoji} **${info.label}**`;
-        })
-        .join("\n");
+      const applicationId = crypto.randomUUID().slice(0, 8).toUpperCase();
+      appData.applicationId = applicationId;
 
       const embed = new EmbedBuilder()
-        .setColor(0xfee75c)
-        .setTitle("📥 New Family Application")
-        .setDescription(
-          `### Application ID\n\`${application.applicationId}\`\n\n` +
-          `👤 **Applicant:** ${interaction.user}\n` +
-          `🆔 **Discord ID:** \`${interaction.user.id}\``
-        )
+        .setTitle("📋 New Family Application")
+        .setDescription(`Application ID: **${applicationId}**`)
         .addFields(
-          {
-            name: "👤 Name",
-            value: application.name,
-            inline: true
-          },
-          {
-            name: "🌍 Region",
-            value: application.region,
-            inline: true
-          },
-          {
-            name: "🎮 In-Game Name",
-            value: application.ign,
-            inline: true
-          },
-          {
-            name: "⭐ Gaming Experience",
-            value: application.experience,
-            inline: false
-          },
-          {
-            name: "🎮 Selected Games",
-            value: selectedGamesText,
-            inline: false
-          },
-          {
-            name: "📌 Status",
-            value: "⏳ Pending",
-            inline: true
-          },
-          {
-            name: "🕐 Submitted",
-            value: `<t:${Math.floor(Date.now() / 1000)}:F>`,
-            inline: true
-          }
+          { name: "👤 User", value: `<@${appData.userId}>`, inline: true },
+          { name: "📝 Name", value: appData.name, inline: true },
+          { name: "🌍 Region", value: appData.region, inline: true },
+          { name: "🎮 In-Game Name", value: appData.ign, inline: true },
+          { name: "⭐ Gaming Experience", value: appData.experience, inline: false },
+          { name: "🎯 Game", value: game.toUpperCase(), inline: true },
+          { name: "📌 Status", value: "Pending", inline: true }
         )
-        .setThumbnail(
-          interaction.user.displayAvatarURL({ size: 256 })
-        )
-        .setFooter({ text: "Family Application System" })
+        .setFooter({ text: "Family Manager • Application System" })
         .setTimestamp();
 
-      const row = new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId(
-            `approve:${interaction.user.id}:${application.applicationId}`
-          )
-          .setLabel("Approve")
-          .setEmoji("✅")
-          .setStyle(ButtonStyle.Success),
-
-        new ButtonBuilder()
-          .setCustomId(
-            `reject:${interaction.user.id}:${application.applicationId}`
-          )
-          .setLabel("Reject")
-          .setEmoji("❌")
-          .setStyle(ButtonStyle.Danger)
-      );
-
-      await logs.send({
-        content: `${interaction.user}`,
+      const sent = await logsChannel.send({
         embeds: [embed],
-        components: [row]
+        components: [applicationButtons(appData.userId, applicationId)],
       });
 
-      cooldowns.set(interaction.user.id, Date.now());
-      pendingSelections.delete(interaction.user.id);
+      appData.logMessageId = sent.id;
+      applications.set(interaction.user.id, appData);
 
-      return interaction.editReply({
-        embeds: [
-          new EmbedBuilder()
-            .setColor(0x57F287)
-            .setTitle("✅ Application Submitted")
-            .setDescription(
-              `Your application has been successfully submitted!\n\n` +
-              `📋 **Application ID:** \`${application.applicationId}\`\n\n` +
-              `🎮 **Selected Games:**\n` +
-              selectedGamesText +
-              `\n\n` +
-              "Your selected game roles have been updated.\n" +
-              "Our staff will review your application shortly."
-            )
-            .setFooter({ text: "Family Application System" })
-            .setTimestamp()
-        ],
-        components: []
-      });
-    } catch (err) {
-      console.error("❌ Application confirmation error:", err);
-
-      return interaction.editReply({
-        content:
-          "❌ Something went wrong while submitting your application. Please contact staff.",
+      return interaction.update({
+        content: "✅ Your application has been submitted successfully!",
         embeds: [],
-        components: []
-      });
-    }
-  }
-
-  // ==========================================================
-  // APPROVE
-  // ==========================================================
-
-  if (interaction.isButton() && interaction.customId.startsWith("approve:")) {
-    const member = await interaction.guild.members.fetch(interaction.user.id);
-
-    if (!isStaff(member)) {
-      return interaction.reply({
-        content: "❌ You do not have permission to handle applications.",
-        ephemeral: true
+        components: [],
       });
     }
 
-    const parts = interaction.customId.split(":");
-    const userId = parts[1];
-    const applicationId = parts[2];
-
-    await interaction.deferUpdate();
-
-    try {
-      const user = await client.users.fetch(userId);
-      const oldEmbed = interaction.message.embeds[0];
-
-      const updatedEmbed = EmbedBuilder.from(oldEmbed)
-        .setColor(0x57F287);
-
-      const fields = updatedEmbed.data.fields || [];
-      const statusIndex = fields.findIndex(
-        field => field.name === "📌 Status"
-      );
-
-      if (statusIndex !== -1) {
-        fields[statusIndex] = {
-          name: "📌 Status",
-          value: "✅ Approved",
-          inline: true
-        };
+    // =========================
+    // APPROVE / REJECT BUTTONS
+    // =========================
+    if (interaction.isButton() && interaction.customId.startsWith("approve:")) {
+      if (!(await isStaff(interaction))) {
+        return interaction.reply({
+          content: "❌ You do not have permission to manage applications.",
+          ephemeral: true,
+        });
       }
 
-      updatedEmbed.setFields(fields);
+      const [, userId, applicationId] = interaction.customId.split(":");
+      const appData = applications.get(userId);
 
-      updatedEmbed.addFields({
-        name: "👮 Handled By",
-        value: `${interaction.user}\n\`${interaction.user.tag}\``,
-        inline: true
-      });
-
-      updatedEmbed.addFields({
-        name: "🕐 Decision",
-        value: `<t:${Math.floor(Date.now() / 1000)}:F>`,
-        inline: false
-      });
-
-      updatedEmbed.setFooter({
-        text: `Family Application • ${applicationId}`
-      });
-
-      await interaction.message.edit({
-        embeds: [updatedEmbed],
-        components: []
-      });
-
-      try {
-        const dmEmbed = new EmbedBuilder()
-          .setColor(0x57F287)
-          .setTitle("🎉 Family Application Approved!")
-          .setDescription(
-            "Congratulations! Your family application has been **approved** by our staff."
-          )
-          .addFields({
-            name: "📋 Application ID",
-            value: `\`${applicationId}\``
-          })
-          .setFooter({ text: "Family Application System" })
-          .setTimestamp();
-
-        await user.send({ embeds: [dmEmbed] });
-      } catch (err) {
-        console.log(
-          `⚠️ Could not DM ${user.tag}. Their DMs may be disabled.`
-        );
+      if (!appData || appData.applicationId !== applicationId) {
+        return interaction.reply({
+          content: "❌ Application data is no longer available.",
+          ephemeral: true,
+        });
       }
 
-      console.log(
-        `✅ Application ${applicationId} approved by ${interaction.user.tag}`
-      );
-    } catch (err) {
-      console.error("❌ Approve error:", err);
-    }
+      appData.status = "Approved";
+      applications.set(userId, appData);
 
-    return;
-  }
+      const roleId = GAME_ROLES[appData.game];
+      const member = await interaction.guild.members.fetch(userId);
 
-  // ==========================================================
-  // REJECT -> OPEN REASON MODAL
-  // ==========================================================
-
-  if (interaction.isButton() && interaction.customId.startsWith("reject:")) {
-    const member = await interaction.guild.members.fetch(interaction.user.id);
-
-    if (!isStaff(member)) {
-      return interaction.reply({
-        content: "❌ You do not have permission to handle applications.",
-        ephemeral: true
-      });
-    }
-
-    const parts = interaction.customId.split(":");
-    const userId = parts[1];
-    const applicationId = parts[2];
-
-    const modal = new ModalBuilder()
-      .setCustomId(`reject_reason:${userId}:${applicationId}`)
-      .setTitle("Reject Application");
-
-    const reason = new TextInputBuilder()
-      .setCustomId("reason")
-      .setLabel("Reason for rejection")
-      .setPlaceholder("Enter the reason for rejecting this application...")
-      .setStyle(TextInputStyle.Paragraph)
-      .setRequired(true)
-      .setMinLength(2)
-      .setMaxLength(1000);
-
-    modal.addComponents(
-      new ActionRowBuilder().addComponents(reason)
-    );
-
-    return interaction.showModal(modal);
-  }
-
-  // ==========================================================
-  // REJECTION REASON SUBMITTED
-  // ==========================================================
-
-  if (
-    interaction.isModalSubmit() &&
-    interaction.customId.startsWith("reject_reason:")
-  ) {
-    const parts = interaction.customId.split(":");
-    const userId = parts[1];
-    const applicationId = parts[2];
-
-    const member = await interaction.guild.members.fetch(interaction.user.id);
-
-    if (!isStaff(member)) {
-      return interaction.reply({
-        content: "❌ You do not have permission to handle applications.",
-        ephemeral: true
-      });
-    }
-
-    const reason = interaction.fields.getTextInputValue("reason").trim();
-
-    await interaction.deferReply({ ephemeral: true });
-
-    try {
-      const user = await client.users.fetch(userId);
-
-      const message = await interaction.channel.messages.fetch(
-        interaction.message.id
-      );
-
-      const oldEmbed = message.embeds[0];
-
-      const updatedEmbed = EmbedBuilder.from(oldEmbed)
-        .setColor(0xED4245);
-
-      const fields = updatedEmbed.data.fields || [];
-      const statusIndex = fields.findIndex(
-        field => field.name === "📌 Status"
-      );
-
-      if (statusIndex !== -1) {
-        fields[statusIndex] = {
-          name: "📌 Status",
-          value: "❌ Rejected",
-          inline: true
-        };
-      }
-
-      updatedEmbed.setFields(fields);
-
-      updatedEmbed.addFields(
-        {
-          name: "❌ Rejection Reason",
-          value: reason,
-          inline: false
-        },
-        {
-          name: "👮 Handled By",
-          value: `${interaction.user}\n\`${interaction.user.tag}\``,
-          inline: true
-        },
-        {
-          name: "🕐 Decision",
-          value: `<t:${Math.floor(Date.now() / 1000)}:F>`,
-          inline: false
+      if (roleId) {
+        const role = interaction.guild.roles.cache.get(roleId);
+        if (role && role.position < interaction.guild.members.me.roles.highest.position) {
+          await member.roles.add(role, "Family application approved");
         }
-      );
+      }
 
-      updatedEmbed.setFooter({
-        text: `Family Application • ${applicationId}`
-      });
+      const oldEmbed = interaction.message.embeds[0];
+      const updated = EmbedBuilder.from(oldEmbed)
+        .setColor(0x57f287)
+        .setFields(
+          ...(oldEmbed.fields || []).filter((f) => f.name !== "📌 Status"),
+          { name: "📌 Status", value: "✅ Approved", inline: true }
+        )
+        .setFooter({ text: `Approved by ${interaction.user.tag}` })
+        .setTimestamp();
 
-      await message.edit({
-        embeds: [updatedEmbed],
-        components: []
+      await interaction.update({
+        embeds: [updated],
+        components: [],
       });
 
       try {
-        const dmEmbed = new EmbedBuilder()
-          .setColor(0xED4245)
-          .setTitle("❌ Family Application Rejected")
-          .setDescription(
-            "Unfortunately, your family application has been **rejected** by our staff."
-          )
-          .addFields(
-            {
-              name: "📋 Application ID",
-              value: `\`${applicationId}\``
-            },
-            {
-              name: "❌ Reason",
-              value: reason
-            }
-          )
-          .setFooter({ text: "Family Application System" })
-          .setTimestamp();
-
-        await user.send({ embeds: [dmEmbed] });
-      } catch (err) {
-        console.log(
-          `⚠️ Could not DM ${user.tag}. Their DMs may be disabled.`
+        await member.send(
+          `🎉 **Your Family Application has been approved!**\n\n` +
+          `Your application **${applicationId}** was approved by the staff team.\n` +
+          `You have received the appropriate game role.`
         );
+      } catch (_) {}
+
+      return;
+    }
+
+    if (interaction.isButton() && interaction.customId.startsWith("reject:")) {
+      if (!(await isStaff(interaction))) {
+        return interaction.reply({
+          content: "❌ You do not have permission to manage applications.",
+          ephemeral: true,
+        });
       }
 
-      console.log(
-        `❌ Application ${applicationId} rejected by ${interaction.user.tag}. Reason: ${reason}`
-      );
+      const [, userId, applicationId] = interaction.customId.split(":");
+      return interaction.showModal(rejectModal(userId, applicationId));
+    }
 
-      return interaction.editReply({
-        content: "✅ Application rejected and the reason has been recorded."
-      });
-    } catch (err) {
-      console.error("❌ Reject error:", err);
+    // =========================
+    // REJECTION REASON MODAL
+    // =========================
+    if (
+      interaction.isModalSubmit() &&
+      interaction.customId.startsWith("reject_reason:")
+    ) {
+      if (!(await isStaff(interaction))) {
+        return interaction.reply({
+          content: "❌ You do not have permission to manage applications.",
+          ephemeral: true,
+        });
+      }
 
-      return interaction.editReply({
-        content: "❌ Something went wrong while rejecting the application."
+      const [, userId, applicationId] = interaction.customId.split(":");
+      const reason = interaction.fields.getTextInputValue("reason").trim();
+      const appData = applications.get(userId);
+
+      if (!appData || appData.applicationId !== applicationId) {
+        return interaction.reply({
+          content: "❌ Application data is no longer available.",
+          ephemeral: true,
+        });
+      }
+
+      appData.status = "Rejected";
+      appData.reason = reason;
+      applications.set(userId, appData);
+
+      const oldEmbed = interaction.message.embeds[0];
+      const updated = EmbedBuilder.from(oldEmbed)
+        .setColor(0xed4245)
+        .setFields(
+          ...(oldEmbed.fields || []).filter(
+            (f) => f.name !== "📌 Status" && f.name !== "❌ Rejection Reason"
+          ),
+          { name: "📌 Status", value: "❌ Rejected", inline: true },
+          { name: "❌ Rejection Reason", value: reason, inline: false }
+        )
+        .setFooter({ text: `Rejected by ${interaction.user.tag}` })
+        .setTimestamp();
+
+      await interaction.update({
+        embeds: [updated],
+        components: [],
       });
+
+      try {
+        const member = await interaction.guild.members.fetch(userId);
+        await member.send(
+          `❌ **Your Family Application was rejected.**\n\n` +
+          `Application: **${applicationId}**\n` +
+          `**Reason:** ${reason}\n\n` +
+          `You may re-apply after addressing the reason above.`
+        );
+      } catch (_) {}
+
+      return;
+    }
+  } catch (error) {
+    console.error("❌ Interaction error:", error);
+
+    if (interaction.isRepliable() && !interaction.replied && !interaction.deferred) {
+      await interaction.reply({
+        content: "❌ Something went wrong. Please try again or contact staff.",
+        ephemeral: true,
+      }).catch(() => {});
     }
   }
 });
 
-// ============================================================
-// LOGIN
-// ============================================================
+client.on(Events.Error, (error) => {
+  console.error("❌ Discord client error:", error);
+});
 
-if (!TOKEN) {
-  console.error("❌ TOKEN environment variable is missing!");
-  process.exit(1);
-}
+process.on("unhandledRejection", (error) => {
+  console.error("❌ Unhandled promise rejection:", error);
+});
+
+process.on("uncaughtException", (error) => {
+  console.error("❌ Uncaught exception:", error);
+});
 
 client.login(TOKEN);
