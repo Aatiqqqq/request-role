@@ -1,6 +1,6 @@
 {
   "name": "family-manager-bot",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "Family Manager Discord bot with CAPTCHA verification and family applications",
   "main": "index.js",
   "scripts": {
