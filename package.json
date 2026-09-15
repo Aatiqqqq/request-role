@@ -1,12 +1,15 @@
 {
-  "name": "family-application-bot",
+  "name": "family-manager-bot",
   "version": "1.0.0",
-  "description": "Family Application Discord Bot",
+  "description": "Family Manager Discord bot with CAPTCHA verification and family applications",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
   "type": "commonjs",
+  "engines": {
+    "node": ">=18"
+  },
   "dependencies": {
     "discord.js": "^14.25.1",
     "express": "^4.21.0"
