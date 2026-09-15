@@ -13,6 +13,7 @@ const {
   StringSelectMenuBuilder,
   StringSelectMenuOptionBuilder,
   Events,
+  MessageFlags,
 } = require("discord.js");
 const express = require("express");
 const crypto = require("crypto");
@@ -130,7 +131,7 @@ async function sendVerificationSuccess(interaction) {
   if (!role) {
     return interaction.reply({
       content: "❌ Member role was not found. Please contact an administrator.",
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     });
   }
 
@@ -138,7 +139,7 @@ async function sendVerificationSuccess(interaction) {
     return interaction.reply({
       content:
         "❌ I cannot assign the Member role. Please move the Member role **below my bot role** in Server Settings → Roles.",
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     });
   }
 
@@ -159,7 +160,7 @@ async function sendVerificationSuccess(interaction) {
 
   await interaction.reply({
     embeds: [successEmbed],
-    ephemeral: true,
+    flags: MessageFlags.Ephemeral,
   });
 
   try {
@@ -179,6 +180,24 @@ async function sendVerificationSuccess(interaction) {
   } catch (error) {
     console.log(`⚠️ Could not DM ${interaction.user.tag}. Their DMs may be closed.`);
   }
+}
+
+function requestRolePanel() {
+  const embed = new EmbedBuilder()
+    .setTitle("📝 Family Application")
+    .setDescription(
+      "Want to join the family? Click **Request Role 📝** below and complete the application form."
+    )
+    .setFooter({ text: "Family Manager • Application System" });
+
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId("request_role")
+      .setLabel("Request Role 📝")
+      .setStyle(ButtonStyle.Primary)
+  );
+
+  return { embeds: [embed], components: [row] };
 }
 
 function applicationModal() {
@@ -248,7 +267,7 @@ function gameSelectionMessage() {
       .setStyle(ButtonStyle.Primary)
   );
 
-  return { embeds: [embed], components: [row], ephemeral: true };
+  return { embeds: [embed], components: [row], flags: MessageFlags.Ephemeral };
 }
 
 function applicationButtons(userId, applicationId) {
@@ -303,6 +322,10 @@ client.once(Events.ClientReady, async (readyClient) => {
         description: "Open the Family Application Form.",
       },
       {
+        name: "setup-request-role",
+        description: "Post the Request Role panel in the configured channel.",
+      },
+      {
         name: "my_application",
         description: "Check your current application status.",
       },
@@ -323,7 +346,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
         if (!interaction.memberPermissions?.has(PermissionsBitField.Flags.Administrator)) {
           return interaction.reply({
             content: "❌ Only server administrators can use this command.",
-            ephemeral: true,
+            flags: MessageFlags.Ephemeral,
           });
         }
 
@@ -334,7 +357,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
         if (!channel || !channel.isTextBased()) {
           return interaction.reply({
             content: "❌ Verification channel was not found.",
-            ephemeral: true,
+            flags: MessageFlags.Ephemeral,
           });
         }
 
@@ -342,12 +365,37 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
         return interaction.reply({
           content: `✅ Verification panel posted in <#${VERIFICATION_CHANNEL_ID}>.`,
-          ephemeral: true,
+          flags: MessageFlags.Ephemeral,
         });
       }
 
       if (interaction.commandName === "open_application") {
         return interaction.showModal(applicationModal());
+      }
+
+      if (interaction.commandName === "setup-request-role") {
+        if (!interaction.memberPermissions?.has(PermissionsBitField.Flags.Administrator)) {
+          return interaction.reply({
+            content: "❌ Only server administrators can use this command.",
+            flags: MessageFlags.Ephemeral,
+          });
+        }
+
+        const channel = interaction.guild.channels.cache.get(REQUEST_ROLE_CHANNEL_ID);
+
+        if (!channel || !channel.isTextBased()) {
+          return interaction.reply({
+            content: "❌ Request Role channel was not found.",
+            flags: MessageFlags.Ephemeral,
+          });
+        }
+
+        await channel.send(requestRolePanel());
+
+        return interaction.reply({
+          content: `✅ Request Role panel posted in <#${REQUEST_ROLE_CHANNEL_ID}>.`,
+          flags: MessageFlags.Ephemeral,
+        });
       }
 
       if (interaction.commandName === "my_application") {
@@ -356,7 +404,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
         if (!appData) {
           return interaction.reply({
             content: `❌ You do not have an application yet. Please use the form in <#${REQUEST_ROLE_CHANNEL_ID}>.`,
-            ephemeral: true,
+            flags: MessageFlags.Ephemeral,
           });
         }
 
@@ -364,7 +412,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
           content:
             `📋 **Application Status:** ${appData.status}\n` +
             (appData.reason ? `\n**Reason:** ${appData.reason}` : ""),
-          ephemeral: true,
+          flags: MessageFlags.Ephemeral,
         });
       }
     }
@@ -379,7 +427,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
         return interaction.reply({
           content:
             `✅ You are already verified. Please fill out the application in <#${REQUEST_ROLE_CHANNEL_ID}>.`,
-          ephemeral: true,
+          flags: MessageFlags.Ephemeral,
         });
       }
 
@@ -418,7 +466,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
         verificationChallenges.delete(interaction.user.id);
         return interaction.reply({
           content: "❌ CAPTCHA expired. Please click Verify again.",
-          ephemeral: true,
+          flags: MessageFlags.Ephemeral,
         });
       }
 
@@ -431,12 +479,28 @@ client.on(Events.InteractionCreate, async (interaction) => {
         verificationChallenges.delete(interaction.user.id);
         return interaction.reply({
           content: "❌ Incorrect CAPTCHA. Please click Verify and try again.",
-          ephemeral: true,
+          flags: MessageFlags.Ephemeral,
         });
       }
 
       verificationChallenges.delete(interaction.user.id);
       return sendVerificationSuccess(interaction);
+    }
+
+    // =========================
+    // REQUEST ROLE BUTTON
+    // =========================
+    if (interaction.isButton() && interaction.customId === "request_role") {
+      const member = await interaction.guild.members.fetch(interaction.user.id);
+
+      if (!member.roles.cache.has(MEMBER_ROLE_ID)) {
+        return interaction.reply({
+          content: `❌ Please complete CAPTCHA verification first in <#${VERIFICATION_CHANNEL_ID}>.`,
+          flags: MessageFlags.Ephemeral,
+        });
+      }
+
+      return interaction.showModal(applicationModal());
     }
 
     // =========================
@@ -480,7 +544,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
       if (!appData) {
         return interaction.reply({
           content: "❌ Application data was not found. Please submit again.",
-          ephemeral: true,
+          flags: MessageFlags.Ephemeral,
         });
       }
 
@@ -537,7 +601,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
       if (!(await isStaff(interaction))) {
         return interaction.reply({
           content: "❌ You do not have permission to manage applications.",
-          ephemeral: true,
+          flags: MessageFlags.Ephemeral,
         });
       }
 
@@ -547,7 +611,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
       if (!appData || appData.applicationId !== applicationId) {
         return interaction.reply({
           content: "❌ Application data is no longer available.",
-          ephemeral: true,
+          flags: MessageFlags.Ephemeral,
         });
       }
 
@@ -594,7 +658,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
       if (!(await isStaff(interaction))) {
         return interaction.reply({
           content: "❌ You do not have permission to manage applications.",
-          ephemeral: true,
+          flags: MessageFlags.Ephemeral,
         });
       }
 
@@ -612,7 +676,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
       if (!(await isStaff(interaction))) {
         return interaction.reply({
           content: "❌ You do not have permission to manage applications.",
-          ephemeral: true,
+          flags: MessageFlags.Ephemeral,
         });
       }
 
@@ -623,7 +687,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
       if (!appData || appData.applicationId !== applicationId) {
         return interaction.reply({
           content: "❌ Application data is no longer available.",
-          ephemeral: true,
+          flags: MessageFlags.Ephemeral,
         });
       }
 
@@ -667,7 +731,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
     if (interaction.isRepliable() && !interaction.replied && !interaction.deferred) {
       await interaction.reply({
         content: "❌ Something went wrong. Please try again or contact staff.",
-        ephemeral: true,
+        flags: MessageFlags.Ephemeral,
       }).catch(() => {});
     }
   }
